@@ -1,91 +1,97 @@
-import streamlit as st
-import requests
+import os
 import time
+import streamlit as st
+from dotenv import load_dotenv
+from agent import build_triage_agent
 
-# ---------------------------------------------------------
-# Page Config & Title
-# ---------------------------------------------------------
+# 1. Load Local .env File
+load_dotenv()
+
+# 2. Bridge Streamlit Cloud Secrets & Local Keys
+try:
+    if "GOOGLE_API_KEY" in st.secrets:
+        os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+    elif "GEMINI_API_KEY" in st.secrets:
+        os.environ["GOOGLE_API_KEY"] = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    pass
+
+if "GOOGLE_API_KEY" in os.environ:
+    os.environ["GEMINI_API_KEY"] = os.environ["GOOGLE_API_KEY"]
+
+# 3. Helper to Extract Clean Text from Gemini Blocks
+def extract_clean_text(output):
+    if isinstance(output, str):
+        return output
+    if isinstance(output, list) and len(output) > 0:
+        first_item = output[0]
+        if isinstance(first_item, dict) and "text" in first_item:
+            return first_item["text"]
+        return str(first_item)
+    return str(output)
+
+# 4. Page Configuration
 st.set_page_config(
-    page_title="Support Ticket & Doc Triage Agent", 
-    page_icon="🤖", 
+    page_title="FastAPI Support Triage Agent",
+    page_icon="🤖",
     layout="wide"
 )
 
-# ---------------------------------------------------------
-# Sidebar: System Status & Demo Guide
-# ---------------------------------------------------------
+# 5. Cache Agent Initialization (One-time load)
+@st.cache_resource(show_spinner="Booting agent and mounting Chroma vector store...")
+def load_agent():
+    return build_triage_agent()
+
+agent_executor = load_agent()
+
+# 6. Sidebar System Status
 with st.sidebar:
     st.header("⚙️ System Status")
-    st.success("🟢 FastAPI Backend: Connected")
-    st.info("🧠 Model: gemini-3.1-flash-lite")
-    st.info("📚 Vector Store: ChromaDB (337 chunks)")
-    st.info("🗄️ Logging: SQLite (logs.db)")
+    st.success("● Vector DB: Chroma (337 chunks)")
+    st.info("● Model: Gemini 3.1 Flash Lite")
+    st.caption("Architecture: In-process LangChain Agent + ChromaDB")
     
     st.divider()
-    
-    st.header("💡 What to Ask")
-    st.markdown("""
-    **1. Doc Retrieval (RAG):**
-    - *How do I define path parameters in FastAPI?*
-    - *What are query parameters?*
-    
-    **2. Ticket Lookup Tool:**
-    - *Check status for ticket TCK-101*
-    - *What is the state of TCK-102?*
-    
-    **3. Casual Chat:**
-    - *Hello! Who are you?*
-    
-    **4. Out of Scope:**
-    - *Who won the 1998 World Cup?*
-    """)
+    st.subheader("💡 Example Queries")
+    st.markdown("- *How do path parameters work?*")
+    st.markdown("- *Check ticket TCK-101*")
+    st.markdown("- *How to handle async tests?*")
 
-# ---------------------------------------------------------
-# Main Page Header
-# ---------------------------------------------------------
-st.title("🤖 Support Ticket & Technical Doc Triage Agent")
-st.caption("Flagship Portfolio RAG System — LangChain, ChromaDB, Gemini & FastAPI")
+# 7. Main Interface
+st.title("🤖 FastAPI Support & Document Triage Agent")
+st.markdown("Ask technical questions about FastAPI documentation or check support ticket statuses.")
 
-FASTAPI_URL = "http://127.0.0.1:8000/chat"
-
-# Initialize Session Chat Memory
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display Chat History
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+# Display conversation history
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if "latency" in msg:
+            st.caption(f"⚡ Latency: {msg['latency']:.2f}s")
 
-# User Chat Input
-if user_query := st.chat_input("Type your technical question or ticket ID (e.g., TCK-101)..."):
-    # Store and show User Message
-    st.session_state.messages.append({"role": "user", "content": user_query})
+# 8. User Interaction Loop
+if prompt := st.chat_input("Ask a question about FastAPI or check a ticket..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
-        st.markdown(user_query)
+        st.markdown(prompt)
 
-    # Process Assistant Response
     with st.chat_message("assistant"):
-        with st.spinner("🤖 Agent analyzing query and selecting tools..."):
+        with st.spinner("Analyzing query..."):
+            start_time = time.time()
             try:
-                start_time = time.time()
-                response = requests.post(
-                    FASTAPI_URL, 
-                    json={"prompt": user_query}, 
-                    timeout=60
-                )
-                elapsed_time = round(time.time() - start_time, 2)
+                response = agent_executor.invoke({"input": prompt})
+                output_text = extract_clean_text(response.get("output", ""))
+            except Exception as e:
+                output_text = f"⚠️ An error occurred: {str(e)}"
+            latency = time.time() - start_time
+            
+            st.markdown(output_text)
+            st.caption(f"⚡ Latency: {latency:.2f}s")
 
-                if response.status_code == 200:
-                    data = response.json()
-                    answer = data.get("response", "No response content received.")
-                    
-                    # Output Answer & Performance Badge
-                    st.markdown(answer)
-                    st.caption(f"⚡ Latency: {elapsed_time}s | Status: 200 OK")
-                    
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
-                else:
-                    st.error(f"❌ Error {response.status_code}: Unable to process query.")
-            except requests.exceptions.ConnectionError:
-                st.error("❌ Connection Failed! Ensure `uvicorn main:app --reload` is running in Terminal 1.")
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": output_text,
+        "latency": latency
+    })
