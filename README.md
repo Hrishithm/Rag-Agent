@@ -1,5 +1,7 @@
 Here is the streamlined `README.md` with the simplified 2-liner setup section:
 
+🔗 **Live Demo:** [fastapi-triage-agent.streamlit.app](https://fastapi-triage-agent.streamlit.app)
+
 ```markdown
 # 🤖 Support Ticket & Technical Document Triage Agent
 
